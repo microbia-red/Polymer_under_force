@@ -67,7 +67,7 @@ parallel -j 10 --ungroup ./constant_force --temperature={1} --force={2} --base_d
 
 ---
 
-### Analysis
+# Run the analysis
 The analysis code is located in the /analysis folder.
 
 Before you run: You must first edit the configuration paths at the top of analysis_static.py and analysis_dynamic.py. Change the BASE_PATH variables to point to the directory where your simulation results are stored.
@@ -100,6 +100,7 @@ This project is released under the [GNU GPLv3 License](LICENSE).[![License: GPL 
 
 ## 🌐 References
 1. Mishra, R. K. et al. *Scaling of hysteresis loop of interacting polymers under a periodic force.* J. Chem. Phys. 138, 244905 (2013). [https://doi.org/10.1063/1.4809985]
+
 
 
 
