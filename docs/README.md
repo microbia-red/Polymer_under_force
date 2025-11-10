@@ -26,7 +26,10 @@ The models are inspired by:
 /src
   Constant_force.cpp      # Polymer under constant pulling force
   Periodic_force.cpp      # Polymer under periodic driving
-  graph_data.py           # Python script for data analysis & visualization
+/analysis                 # Python scripts for data analysis
+  analysis_static.py      # (Fc vs T, Cv vs T)
+  analysis_dynamic.py     # (Hysteresis loops)
+  analysis_utils.py       # (Helper functions, Jackknife)
 /data
   example_input.csv       # Initial monomer positions (example)
 /results
@@ -48,18 +51,31 @@ The models are inspired by:
 
 ### Compile
 
-g++ -Wall -O2 -march=native Constant_force.cpp -lgflags -o constant_force
+# Example compilation for Constant_force.cpp
+g++ -Wall -O2 -march=native src/Constant_force.cpp -lgflags -o constant_force
+
+# Example compilation for Periodic_force.cpp
+g++ -Wall -O2 -march=native src/Periodic_force.cpp -lgflags -o periodic_force
 
 ### Run
 
-./constant_force --temperature 1.0 --force 0.5
+# Run a single simulation
+./constant_force --temperature 1.0 --force 0.5 --sweep 500000 --seed_file data/example_input.csv --base_dir ./results/Constant_force
 
-or
-
-
-parallel -j 10 --ungroup ./constant_force --temperature={1} --force={2} ::: $(echo 0.5 1 1.5 2) ::: $(echo 0.1 0.2 0.3 0.4)
+# Run multiple simulations in parallel (example using GNU Parallel)
+parallel -j 10 --ungroup ./constant_force --temperature={1} --force={2} --base_dir=./results/Constant_force ::: $(echo 0.5 1 1.5 2) ::: $(echo 0.1 0.2 0.3 0.4)
 
 ---
+
+### Analysis
+The analysis code is located in the /analysis folder.
+
+Before you run: You must first edit the configuration paths at the top of analysis_static.py and analysis_dynamic.py. Change the BASE_PATH variables to point to the directory where your simulation results are stored.
+
+# example in analysis_static.py
+STATIC_RESULTS_PATH = Path(r"./results/Constant_force")
+# example in analysis_dynamic.py
+DYNAMIC_RESULTS_PATH = Path(r"./results/Periodic_force")
 
 ## 📊 Results
 Some of the reproduced results include:
@@ -84,5 +100,6 @@ This project is released under the [GNU GPLv3 License](LICENSE).[![License: GPL 
 
 ## 🌐 References
 1. Mishra, R. K. et al. *Scaling of hysteresis loop of interacting polymers under a periodic force.* J. Chem. Phys. 138, 244905 (2013). [https://doi.org/10.1063/1.4809985]
+
 
 
