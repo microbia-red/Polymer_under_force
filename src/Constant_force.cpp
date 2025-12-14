@@ -1,5 +1,5 @@
 /**
- * @file polymer_simulation.cpp
+ * @file Constant_force.cpp
  * @brief Monte Carlo simulation of a polymer under a constant pulling force.
  *
  * This file implements a Metropolis-Hastings algorithm to simulate the thermodynamics 
