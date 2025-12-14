@@ -1,4 +1,21 @@
-// A Monte Carlo simulation of a polymer under a constant pulling force.
+/**
+ * @file polymer_simulation.cpp
+ * @brief Monte Carlo simulation of a polymer under a constant pulling force.
+ *
+ * This file implements a Metropolis-Hastings algorithm to simulate the thermodynamics 
+ * of an off-lattice polymer chain. The model uses harmonic springs for covalent bonds 
+ * and a Lennard-Jones potential for non-bonded interactions.
+ *
+ * @details
+ * The Hamiltonian of the system is defined as:
+ * \f$ H = \sum V_{harm} + \sum V_{LJ} - F \cdot z_{end-to-end} \f$
+ *
+ * The simulation supports two types of moves:
+ * - Single Particle Move (local relaxation)
+ * - Tail Shift (global reconfiguration)
+ *
+ * Dependencies: gflags
+ */
 
 #include <array>
 #include <cctype>
@@ -22,31 +39,52 @@ DEFINE_int32 (seed,          5, "RNG seed");
 DEFINE_string(seed_file,    "./initial_positions.csv", "Path to CSV file with initial positions");
 DEFINE_string(base_dir, "./results/Constant_force", "Base directory for output files");
 
-static constexpr int N = 64;
+static constexpr int N = 64; ///< Number of monomers in the polymer chain.
 
-static constexpr double k_spring = 16.67;
-static constexpr double B_lj = 1.0;
-static constexpr double C_lj = 2.0;
-static constexpr double d0 = 1.0;
-static constexpr double cut_off = 2.5;
+// Potential Parameters
+static constexpr double k_spring = 16.67; ///< Spring constant for the harmonic bonds.
+static constexpr double B_lj = 1.0;       ///< Lennard-Jones repulsive coefficient (sigma^12 term).
+static constexpr double C_lj = 2.0;       ///< Lennard-Jones attractive coefficient (sigma^6 term).
+static constexpr double d0 = 1.0;         ///< Equilibrium bond length.
+static constexpr double cut_off = 2.5;    ///< Cut-off radius for Lennard-Jones interactions.
 
-static constexpr int interval_default = 130;
-static constexpr double target_acceptance = 0.40;
-static constexpr double corr_coeff = 0.05;
+// Simulation Parameters
+static constexpr int interval_default = 130;      ///< Interval of steps between data sampling.
+static constexpr double target_acceptance = 0.40; ///< Target acceptance rate for adaptive step size adjustment.
+static constexpr double corr_coeff = 0.05;        ///< Correction coefficient for step size modification.
 
-static int GLOBAL_SEED = 5;
+static int GLOBAL_SEED = 5; ///< Global random number generator seed (modified via gflags).
 
+/**
+ * @brief Groups a simulation sweep number with a scalar data value.
+ *
+ * Used for storing time-series data such as end-to-end extension or 
+ * radius of gyration.
+ */
 struct DataPoint {
-  int sweep;
-  double value;
+  int sweep;    ///< Monte Carlo sweep number.
+  double value; ///< Measured value (e.g., extension).
 };
 
+/**
+ * @brief Groups a simulation sweep number with split energy components.
+ *
+ * Used to analyze the Harmonic (bonded) and Lennard-Jones (non-bonded) 
+ * energy contributions separately.
+ */
 struct SplitEnergyDataPoint {
-  int sweep;
-  double har;
-  double lj;
+  int sweep;  ///< Monte Carlo sweep number.
+  double har; ///< Harmonic potential energy.
+  double lj;  ///< Lennard-Jones potential energy.
 };
 
+/**
+ * @brief Dumps a buffer of `DataPoint` structures to a file.
+ *
+ * @param buffer Constant vector containing the data points to write.
+ * @param fout Reference to the output file stream.
+ * @warning If the stream `fout` is invalid, an error is printed to stderr and the function returns.
+ */
 static void flush_buffer_to_file(const std::vector<DataPoint>& buffer,
                                  std::ofstream &fout) {
   if (!fout) {
@@ -58,6 +96,14 @@ static void flush_buffer_to_file(const std::vector<DataPoint>& buffer,
   }
 }
 
+/**
+ * @brief Dumps a buffer of `SplitEnergyDataPoint` structures to a file.
+ *
+ * Writes data in CSV format: `sweep,harmonic_energy,lj_energy`.
+ *
+ * @param buffer Constant vector containing the split energy data.
+ * @param fout Reference to the output file stream.
+ */
 static void split_energy_flush_buffer_to_file(const std::vector<SplitEnergyDataPoint>& buffer,
                                               std::ofstream &fout) {
   if (!fout) {
@@ -69,6 +115,17 @@ static void split_energy_flush_buffer_to_file(const std::vector<SplitEnergyDataP
   }
 }
 
+/**
+ * @brief Precomputes a set of random unit vectors for Monte Carlo moves.
+ *
+ * Generates `sweep * N` random vectors distributed uniformly on a unit sphere.
+ * These are used as displacement vectors during the simulation to improve performance.
+ *
+ * @param sweep Total number of Monte Carlo sweeps.
+ * @param[out] R Vector where the precomputed shifts will be stored.
+ *
+ * @note Handles the edge case where the generated vector has zero norm by forcing it to (1,0,0).
+ */
 static void precompute_random_shifts(int sweep,
                                      std::vector<std::array<double,3>> &R) {
   R.clear();
@@ -86,6 +143,18 @@ static void precompute_random_shifts(int sweep,
   }
 }
 
+/**
+ * @brief Sets up the directory structure and opens output files.
+ *
+ * Creates a directory hierarchy based on temperature and force:
+ * `base_dir/T_{temp}/F_{force}/`.
+ *
+ * @param T Simulation temperature.
+ * @param f Pulling force.
+ * @param base Base directory path.
+ * @param[out] fs Vector of output file streams to be opened.
+ * @param[out] names Vector containing the names of the generated files.
+ */
 static void setup_files_and_directories_FORCE(double T, double f,
                                               const std::string &base,
                                               std::vector<std::ofstream> &fs,
@@ -126,6 +195,15 @@ static void setup_files_and_directories_FORCE(double T, double f,
   }
 }
 
+/**
+ * @brief Loads initial polymer positions from a CSV file.
+ *
+ * Expects a CSV format `x,y,z`. Ignores empty lines or lines starting with alphabetic characters.
+ *
+ * @param file Path to the CSV file.
+ * @param[out] pos Nx3 array where the positions will be loaded.
+ * @return `true` if N positions were successfully loaded, `false` otherwise.
+ */
 static bool load_positions(const std::string &file, double pos[N][3]) {
   std::ifstream in(file);
   if (!in) return false;
@@ -149,6 +227,14 @@ static bool load_positions(const std::string &file, double pos[N][3]) {
   return true;
 }
 
+/**
+ * @brief Calculates the Euclidean end-to-end distance of the polymer.
+ *
+ * \f$ R_{ee} = || \vec{r}_{N-1} - \vec{r}_0 || \f$
+ *
+ * @param positions The Nx3 array of current positions.
+ * @return The norm of the end-to-end vector.
+ */
 static double end_to_end_length(const double positions[N][3]) {
   double dx = positions[N-1][0] - positions[0][0];
   double dy = positions[N-1][1] - positions[0][1];
@@ -156,10 +242,25 @@ static double end_to_end_length(const double positions[N][3]) {
   return std::sqrt(dx*dx + dy*dy + dz*dz);
 }
 
+/**
+ * @brief Calculates the Z-projection of the end-to-end distance.
+ *
+ * Used to compute the work done by the external pulling force along the Z-axis.
+ * \f$ z_{proj} = |z_{N-1} - z_0| \f$
+ *
+ * @param positions The Nx3 array of current positions.
+ * @return The absolute distance in the Z dimension.
+ */
 static double end_to_end_z(const double positions[N][3]) {
   return std::abs(positions[N-1][2] - positions[0][2]);
 }
 
+/**
+ * @brief Computes the center of mass of the polymer.
+ *
+ * @param positions The Nx3 array of current positions.
+ * @param[out] cm Array of 3 doubles to store the result (x, y, z).
+ */
 static void centre_of_mass(const double positions[N][3], double cm[3]) {
   cm[0] = cm[1] = cm[2] = 0.0;
   for (int i = 0; i < N; ++i) {
@@ -172,6 +273,15 @@ static void centre_of_mass(const double positions[N][3], double cm[3]) {
   cm[2] /= static_cast<double>(N);
 }
 
+/**
+ * @brief Calculates the squared radius of gyration.
+ *
+ * A measure of the compactness of the polymer.
+ * \f$ R_g^2 = \frac{1}{N} \sum_{i=0}^{N-1} (\vec{r}_i - \vec{r}_{cm})^2 \f$
+ *
+ * @param positions The Nx3 array of current positions.
+ * @return The value of \f$ R_g^2 \f$.
+ */
 static double radius_of_gyration_squared(const double positions[N][3]) {
   double cm[3];
   centre_of_mass(positions, cm);
@@ -186,6 +296,15 @@ static double radius_of_gyration_squared(const double positions[N][3]) {
   return rog2;
 }
 
+/**
+ * @brief Calculates the total harmonic potential energy.
+ *
+ * Sums the energy of all covalent bonds between adjacent monomers.
+ * \f$ V_{harm} = \sum_{i=0}^{N-2} \frac{1}{2} k_{spring} (|\vec{r}_{i+1} - \vec{r}_i| - d_0)^2 \f$
+ *
+ * @param positions The Nx3 array of current positions.
+ * @return Total harmonic energy.
+ */
 static double harmonic_potential(const double positions[N][3]) {
   double hp = 0.0;
   for (int i = 0; i < N - 1; ++i) {
@@ -199,6 +318,15 @@ static double harmonic_potential(const double positions[N][3]) {
   return hp;
 }
 
+/**
+ * @brief Calculates the total Lennard-Jones potential energy.
+ *
+ * Considers non-adjacent pairs ($j > i+1$) within the `cut_off` distance.
+ * \f$ V_{LJ} = \sum_{pairs} \left( \frac{B}{r^{12}} - \frac{C}{r^6} \right) \f$
+ *
+ * @param positions The Nx3 array of current positions.
+ * @return Total Lennard-Jones energy.
+ */
 static double lennard_jones(const double positions[N][3]) {
   double lj = 0.0;
   for (int i = 0; i < N; ++i) {
@@ -217,6 +345,17 @@ static double lennard_jones(const double positions[N][3]) {
   return lj;
 }
 
+/**
+ * @brief Initializes the energy matrix and energy sum arrays.
+ *
+ * Performs a full O(N^2) calculation of pairwise interactions to establish 
+ * the baseline energy state before the Monte Carlo loop begins.
+ *
+ * @param positions The initial Nx3 positions array.
+ * @param[out] energy NxN matrix where `energy[i][j]` stores the interaction between i and j.
+ * @param[out] sums Array of size N. `sums[i]` holds the total energy felt by particle i.
+ * @param[out] total_energy Reference to store the total potential energy of the system.
+ */
 static void initial_state_matrix(const double positions[N][3],
                                  double energy[N][N],
                                  double sums[N],
@@ -257,6 +396,18 @@ static void initial_state_matrix(const double positions[N][3],
   }
 }
 
+/**
+ * @brief Incrementally updates energy for a Single Particle Move.
+ *
+ * Efficiently recalculates interactions only for the moved particle `idx` against all others.
+ * Updates the energy matrix, the sums array, and the total energy in O(N).
+ *
+ * @param positions Positions array (must contain the *new* position of `idx`).
+ * @param energy Energy matrix (input/output).
+ * @param sums Energy sums array (input/output).
+ * @param total_energy Reference to total energy (updated with the delta).
+ * @param idx Index of the particle that was moved.
+ */
 static void sm_update(const double positions[N][3],
                       double energy[N][N],
                       double sums[N],
@@ -298,6 +449,22 @@ static void sm_update(const double positions[N][3],
   total_energy += delta_total;
 }
 
+/**
+ * @brief Updates energy for a Tail Shift move.
+ *
+ * Called when a segment of the polymer (from `index` to `N-1`) is translated.
+ * It iterates through the moved segment and calls `sm_update` for each particle.
+ *
+ * @note Complexity: O((N-index) * N). While internal distances within the moved tail 
+ * do not change, they are recalculated (delta=0), which effectively updates the 
+ * interactions between the moved tail and the static head.
+ *
+ * @param positions Positions array (with the tail already shifted).
+ * @param energy Energy matrix.
+ * @param sums Energy sums array.
+ * @param total_energy Reference to total energy.
+ * @param index Start index of the tail segment.
+ */
 static void ts_update(const double positions[N][3],
                       double energy[N][N],
                       double sums[N],
@@ -308,6 +475,29 @@ static void ts_update(const double positions[N][3],
   }
 }
 
+/**
+ * @brief Executes the main Monte Carlo simulation loop.
+ *
+ * Performs the specified number of sweeps, proposing moves (Single Move or Tail Shift),
+ * applying the Metropolis acceptance criterion, and adaptively adjusting step sizes
+ * during the equilibration phase.
+ *
+ * @param positions Initial positions array (modified in-place).
+ * @param sweep Total number of MC sweeps.
+ * @param force External pulling force.
+ * @param beta Inverse temperature (1/kT).
+ * @param f_ext Output stream for extension data.
+ * @param f_rog Output stream for radius of gyration data.
+ * @param f_pos Output stream for final positions.
+ * @param f_en_f Output stream for total energy (including force contribution).
+ * @param f_en_nf Output stream for internal energy (excluding force).
+ * @param f_split Output stream for split energies.
+ * @param f_sm_acc Output stream for Single Move acceptance rates.
+ * @param f_ts_acc Output stream for Tail Shift acceptance rates.
+ * @param f_sm_ss Output stream for Single Move step sizes.
+ * @param f_ts_ss Output stream for Tail Shift step sizes.
+ * @param f_co Output stream for the contact matrix (cutoff).
+ */
 static void montecarlo(double positions[N][3], int sweep, double force, double beta,
                        std::ofstream &f_ext,
                        std::ofstream &f_rog,
